@@ -1,0 +1,17 @@
+{
+  "version": 3,
+  "framework": "nextjs",
+  "routes": [
+    {
+      "src": "/embed",
+      "dest": "/embed"
+    },
+    {
+      "src": "/",
+      "dest": "/"
+    }
+  ],
+  "github": {
+    "silent": true
+  }
+}
