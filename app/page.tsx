@@ -126,7 +126,7 @@ export default function Home() {
     const safeTitle = title?.trim() ? title.trim() : "Untitled Card";
 
     // Build Discord-formatted spoiler + link message
-    const discordMessage = `||[${safeTitle}](${fullUrl})||`;
+    const discordMessage = `[${safeTitle}](${fullUrl})`;
 
     const ok = await writeToClipboard(discordMessage);
     if (!ok) {
@@ -327,7 +327,7 @@ export default function Home() {
                   copiedDiscord ? "opacity-90" : ""
                 }`}
                 aria-label="Copy Discord message"
-                title='Copies "||[title](link)||" to clipboard'
+                title='Copies "[title](link)" to clipboard'
               >
                 {copiedDiscord ? (
                   <span className="inline-flex items-center gap-2">
