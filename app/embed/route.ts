@@ -10,119 +10,53 @@ import {
 } from "@/lib/sanitize";
 
 /**
- * app/embed/route.ts
- *
- * Produces a full HTML document with OG + Twitter meta tags.
- * - Validates & truncates inputs defensively.
- * - Appends footer to the end of the description as a new line in bold markdown:
- *     description + "\n\n**" + footer + "**"
- *   while ensuring the resulting og:description does not exceed LIMITS.description.
- * - Emits extra og:image tags to improve compatibility with social crawlers.
- * - Returns a small responsive preview page for humans.
+ * /embed route (server)
+ * - Produces a full HTML document (server-side) with safe, escaped OG + Twitter meta tags.
+ * - Validates & truncates inputs to avoid XSS / huge payloads.
+ * - Returns a compact, responsive, dark-styled preview page for humans.
+ * - Adds safe HTTP headers and reasonable Cache-Control.
  */
 
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams;
   const params = getEmbedParams(searchParams);
 
-  // Raw params trimmed
+  // Validate inputs using helpers; fallback to safe defaults
   const titleRaw = (params.title || "").trim();
   const descRaw = (params.desc || "").trim();
   const footerRaw = (params.footer || "").trim();
   const imageRaw = (params.image || "").trim();
 
-  // Validate
   const titleValid = validateTitle(titleRaw);
   const descValid = validateDescription(descRaw);
   const footerValid = validateFooter(footerRaw);
   const imageValid = validateImageUrl(imageRaw);
 
-  // Fallbacks + truncation for title
+  // Apply fallbacks and truncate to safe lengths (defensive)
   const title = titleValid.valid
     ? titleRaw.slice(0, LIMITS.title)
     : "Untitled Card";
 
-  // Handle description + footer composition with truncation to LIMITS.description
-  // We'll append footer in markdown bold preceded by two newlines: "\n\n**footer**"
-  const footerAllowed = footerValid.valid
-    ? footerRaw.slice(0, LIMITS.footer)
-    : "";
-  const footerMarkdown = footerAllowed ? `\n\n**${footerAllowed}**` : "";
-
-  // Start with desc (trim to LIMITS.description first)
-  let baseDesc = descValid.valid
+  const description = descValid.valid
     ? descRaw.slice(0, LIMITS.description)
     : "A shareable embed card created with Dynamic Embed Generator";
 
-  // If combined length exceeds LIMITS.description, truncate intelligently
-  // Reserve length for footerMarkdown if footer exists
-  let description = baseDesc;
-  if (footerMarkdown) {
-    const totalLen = baseDesc.length + footerMarkdown.length;
-    if (totalLen <= LIMITS.description) {
-      description = baseDesc + footerMarkdown;
-    } else {
-      // Need to shrink baseDesc to fit footerMarkdown
-      const reserve = footerMarkdown.length;
-      const allowedBase = LIMITS.description - reserve;
-      if (allowedBase > 3) {
-        // keep room for ellipsis
-        const truncatedBase = baseDesc.slice(0, allowedBase - 3).trimEnd();
-        description = `${truncatedBase}...${footerMarkdown}`;
-      } else {
-        // Not enough room for base + footer; need to shrink footer itself
-        const allowedFooterContent = Math.max(0, LIMITS.description - 4); // 4 = "\n\n**" + ending "**" count heuristics (we'll handle precisely)
-        const shrunkFooter = footerAllowed
-          .slice(0, allowedFooterContent)
-          .trim();
-        const footerMd = shrunkFooter ? `\n\n**${shrunkFooter}**` : "";
-        // If still too long (edge) fall back to description only truncated
-        if (footerMd.length <= LIMITS.description) {
-          // place only footer (if it fits), else truncate footer more
-          description = footerMd.trimStart().length
-            ? footerMd.trimStart()
-            : baseDesc.slice(0, LIMITS.description);
-          // ensure no leading newline-only content
-          if (!description) description = baseDesc.slice(0, LIMITS.description);
-        } else {
-          description = baseDesc.slice(0, LIMITS.description);
-        }
-      }
-    }
-  } else {
-    // no footer - ensure trimmed
-    description = baseDesc.slice(0, LIMITS.description);
-  }
+  const footer = footerValid.valid ? footerRaw.slice(0, LIMITS.footer) : "";
 
   // Only allow HTTPS absolute image URLs from validation helper
   const imageUrl = imageValid.valid ? imageRaw : "";
 
-  // Escape for HTML injection (escapeHtml should not alter asterisks; asterisks are safe for markdown)
+  // Escape all values before injecting into HTML
   const escapedTitle = escapeHtml(title);
   const escapedDescription = escapeHtml(description);
-  const escapedFooter = escapeHtml(footerAllowed);
+  const escapedFooter = escapeHtml(footer);
   const escapedImageUrl = escapeHtml(imageUrl);
 
-  // Build canonical/current URL
+  // Build the canonical URL the crawler sees
   const currentUrl = `${request.nextUrl.origin}${request.nextUrl.pathname}${request.nextUrl.search}`;
   const escapedUrl = escapeHtml(currentUrl);
 
-  // Image hints (recommended social image size)
-  const hasImage = !!escapedImageUrl;
-  const imageWidth = 1200;
-  const imageHeight = 630;
-  const imageType = hasImage
-    ? (() => {
-        const lower = escapedImageUrl.toLowerCase();
-        if (lower.endsWith(".png")) return "image/png";
-        if (lower.endsWith(".webp")) return "image/webp";
-        if (lower.endsWith(".gif")) return "image/gif";
-        if (lower.endsWith(".jpg") || lower.endsWith(".jpeg"))
-          return "image/jpeg";
-        return "image/*";
-      })()
-    : "";
-
+  // Minimal, responsive, accessible HTML preview (dark theme, cyan accents)
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -136,49 +70,23 @@ export async function GET(request: NextRequest) {
   <meta property="og:url" content="${escapedUrl}" />
   <meta property="og:title" content="${escapedTitle}" />
   <meta property="og:description" content="${escapedDescription}" />
+  ${
+    escapedImageUrl
+      ? `<meta property="og:image" content="${escapedImageUrl}" />`
+      : ""
+  }
+  
   <meta property="og:locale" content="en_US" />
-  ${hasImage ? `<meta property="og:image" content="${escapedImageUrl}" />` : ""}
-  ${
-    hasImage
-      ? `<meta property="og:image:secure_url" content="${escapedImageUrl}" />`
-      : ""
-  }
-  ${
-    hasImage ? `<meta property="og:image:width" content="${imageWidth}" />` : ""
-  }
-  ${
-    hasImage
-      ? `<meta property="og:image:height" content="${imageHeight}" />`
-      : ""
-  }
-  ${
-    hasImage
-      ? `<meta property="og:image:type" content="${escapeHtml(imageType)}" />`
-      : ""
-  }
-  ${
-    hasImage
-      ? `<meta property="og:image:alt" content="${
-          escapedFooter || escapedTitle
-        }" />`
-      : ""
-  }
-  ${hasImage ? `<link rel="image_src" href="${escapedImageUrl}" />` : ""}
 
-  <!-- Twitter / Card -->
+  <!-- Twitter -->
   <meta name="twitter:card" content="${
-    hasImage ? "summary_large_image" : "summary"
+    escapedImageUrl ? "summary_large_image" : "summary"
   }" />
   <meta name="twitter:title" content="${escapedTitle}" />
   <meta name="twitter:description" content="${escapedDescription}" />
   ${
-    hasImage ? `<meta name="twitter:image" content="${escapedImageUrl}" />` : ""
-  }
-  ${
-    hasImage
-      ? `<meta name="twitter:image:alt" content="${
-          escapedFooter || escapedTitle
-        }" />`
+    escapedImageUrl
+      ? `<meta name="twitter:image" content="${escapedImageUrl}" />`
       : ""
   }
 
@@ -189,13 +97,15 @@ export async function GET(request: NextRequest) {
 
   <style>
     :root{
-      --bg:#07080a;
-      --panel:#0f1720;
+      --bg:#07080a;           /* darker background */
+      --panel:#0f1720;        /* card panel */
       --muted:#9aa3b2;
       --text:#e6eef6;
       --accent:#00b4d8;
       --card-radius:12px;
     }
+
+    /* Reset */
     *,*::before,*::after{box-sizing:border-box}
     html,body{height:100%}
     body{
@@ -212,7 +122,13 @@ export async function GET(request: NextRequest) {
       padding:20px;
       min-height:100vh;
     }
-    .wrap{ width:100%; max-width:760px; padding:18px; }
+
+    .wrap{
+      width:100%;
+      max-width:760px;
+      padding:18px;
+    }
+
     .card{
       background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.02));
       border-radius:var(--card-radius);
@@ -220,13 +136,57 @@ export async function GET(request: NextRequest) {
       box-shadow: 0 10px 30px rgba(2,6,23,0.6);
       border:1px solid rgba(255,255,255,0.03);
     }
-    .media{ width:100%; display:block; max-height:420px; object-fit:cover; background:#0b1220; }
-    .content{ padding:20px 22px; }
-    h1{ font-size:1.45rem; margin:0 0 8px 0; line-height:1.15; color:var(--text); word-break:break-word; }
-    p.lead{ margin:0 0 12px 0; color:var(--muted); font-size:0.98rem; word-break:break-word; white-space:pre-wrap; }
-    .footer{ margin-top:12px; color:var(--muted); font-size:0.85rem; }
-    .meta{ margin-top:14px; display:flex; align-items:center; justify-content:center; gap:6px; color:var(--muted); font-size:0.85rem; }
-    a.home{ color:var(--accent); text-decoration:none; font-weight:600; }
+
+    .media{
+      width:100%;
+      display:block;
+      max-height:420px;
+      object-fit:cover;
+      background:#0b1220;
+    }
+
+    .content{
+      padding:20px 22px;
+    }
+
+    h1{
+      font-size:1.45rem; /* responsive */
+      margin:0 0 8px 0;
+      line-height:1.15;
+      color:var(--text);
+      word-break:break-word;
+    }
+
+    p.lead{
+      margin:0 0 12px 0;
+      color:var(--muted);
+      font-size:0.98rem;
+      word-break:break-word;
+    }
+
+    .footer{
+      margin-top:12px;
+      color:var(--muted);
+      font-size:0.85rem;
+    }
+
+    .meta{
+      margin-top:14px;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      gap:6px;
+      color:var(--muted);
+      font-size:0.85rem;
+    }
+
+    a.home{
+      color:var(--accent);
+      text-decoration:none;
+      font-weight:600;
+    }
+
+    /* responsive tweaks */
     @media (max-width:640px){
       .wrap{padding:10px; max-width:520px}
       .content{padding:16px}
@@ -239,7 +199,7 @@ export async function GET(request: NextRequest) {
   <main class="wrap" role="main" aria-label="Embed preview">
     <article class="card" aria-live="polite">
       ${
-        hasImage
+        escapedImageUrl
           ? `<img src="${escapedImageUrl}" alt="${escapedTitle}" class="media" loading="eager">`
           : ""
       }
@@ -257,13 +217,16 @@ export async function GET(request: NextRequest) {
 </body>
 </html>`;
 
+  // Security & caching headers
   const headers = {
     "Content-Type": "text/html; charset=utf-8",
     "X-Content-Type-Options": "nosniff",
+    // SAMEORIGIN prevents clickjacking while allowing same-origin embedding if needed
     "X-Frame-Options": "SAMEORIGIN",
+    // Prevent MIME-sniffing and reduce referrer leakage
     "Referrer-Policy": "no-referrer-when-downgrade",
-    // Keep short during testing; increase for production as needed
-    "Cache-Control": "public, max-age=300, stale-while-revalidate=86400",
+    // Reasonable CDN cache: 1 hour, with stale-while-revalidate for quick refresh behavior
+    "Cache-Control": "public, max-age=3600, stale-while-revalidate=86400",
   };
 
   return new NextResponse(html, {

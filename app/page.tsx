@@ -251,7 +251,7 @@ export default function Home() {
                 htmlFor="footer"
                 className="block text-sm font-medium mb-1"
               >
-                Footer (optional)
+                Footer (optional, Discord Unsupported)
               </label>
               <input
                 id="footer"
